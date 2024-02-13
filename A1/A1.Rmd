@@ -1,0 +1,193 @@
+---
+title: "A1"
+author: "Haoxiang Wang"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 4
+Load the data
+```{r}
+library(readxl)
+library(tidyverse)
+# install.packages("jrvFinance")
+library(jrvFinance)
+bond_data <- read_excel("bond_data.xlsx")
+```
+
+The format here is compounding semi-annually (1 period = 6 months)
+```{r}
+yield_calcualte <- function(coupon, coupon_n, price){
+  cf<-rep(coupon,coupon_n)
+  cf[length(cf)]<-cf[length(cf)]+100
+  cf<-c(-price,cf)
+  #print(cf)
+  cf_t<-seq(1, coupon_n)
+  #the first coupon is one month and a half from t=0
+  cf_t<-cf_t-((6-1.5)/6)
+  cf_t<-c(0,cf_t)
+  #print(cf_t)
+  return(irr(cf=cf, cf.t=cf_t ))
+  
+}
+```
+
+Store the results
+```{r}
+yield_result <- data.frame(matrix(0, nrow = nrow(bond_data), ncol = 11))
+colnames(yield_result) <- c("Time", "1-08", "1-09", "1-10", "1-11", "1-12", "1-15", "1-16", "1-17", "1-18", "1-19")
+yield_result[,1]<-(bond_data$coupon_number-((6-1.5)/6))/2
+```
+
+Calculate the yield curve
+```{r}
+for (i in c(1:nrow(yield_result))) {
+  for (j in c(1:10)) {
+    #since the calculation takes half a year as one period, we need to times the result by 2 to transform it into one year's format
+    yield_result[i,j+1]=2*yield_calcualte(coupon = as.numeric(bond_data[i,1])/2,coupon_n = as.numeric(bond_data[i,15]),price = as.numeric(bond_data[i,j+4]))
+  }
+}
+```
+
+Plot the yield curve
+```{r}
+yield_result_long <- pivot_longer(yield_result, -Time, names_to = "Day", values_to = "Yield")
+ggplot(yield_result_long, aes(x = Time, y = Yield, color = Day)) +
+  geom_line() +
+  labs(x = "Time to Maturity", y = "Yield", title = "Yield Curve") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+Define the spot curve function
+```{r}
+bootstrap_yield_curve <- function(price, coupon_rate, maturity) {
+  n_bonds <- length(price)
+  spot_rates <- numeric(n_bonds)
+  
+  for (i in seq_along(price)) {
+    if (i == 1) {
+      spot_rate <- ((100 + coupon_rate[i]) / price[i])^(1 / maturity[i]) - 1
+      spot_rates[i] <- spot_rate
+      
+    } else {
+      # Calculate the cash flow before the final payment
+      cash_flows <- c(rep(coupon_rate[i], i-1))
+      discounted_cash_flows <- sapply(1:length(cash_flows), function(j) cash_flows[j] / (1 + spot_rates[j])^maturity[j])
+      residual <- price[i] - sum(discounted_cash_flows)
+      spot_rates[i] <- ((100 + coupon_rate[i]) / residual)^(1 / maturity[i]) - 1
+    }
+  }
+  return(spot_rates)
+}
+```
+
+Calculate the spot curve
+```{r}
+maturity_spot<-seq(1, 11)-((6-1.5)/6)
+coupon_rate_spot<-as.numeric(bond_data$coupon)/2
+spot_result<-yield_result
+
+for (i in c(1:10)){
+  price_spot<-unlist(bond_data[,4+i])
+  spot_cal=bootstrap_yield_curve(price_spot, coupon_rate_spot, maturity_spot)
+  spot_result[,i+1]=spot_cal*2
+}
+```
+
+Plot the spot curve
+```{r}
+spot_result_long <- pivot_longer(spot_result, -Time, names_to = "Day", values_to = "Spot")
+ggplot(spot_result_long, aes(x = Time, y = Spot, color = Day)) +
+  geom_line() +
+  labs(x = "Time to Maturity", y = "Spot Rate", title = "Spot Curve") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+Calculate the forward curve
+```{r}
+forward_result<-yield_result[1:7,]
+#forward_result[,1]<-c("1yr-1yr","1yr-1.5yr","1yr-2yr","1yr-2.5yr","1yr-3yr","1yr-3.5yr","1yr-4yr")
+forward_result[,1]<-c(1,1.5,2,2.5,3,3.5,4)
+for (i in c(1:10)) {
+  for (j in c(1:7)) {
+    f_1<-(1+(spot_result[j+4,i+1]/2))^(spot_result[j+4,1]*2)
+    #print(spot_result[j+4,i+1])
+    #print(spot_result[j+4,1]*2)
+    f_2<-(1+spot_result[3,i+1]/2)^(spot_result[3,1]*2)
+    #print(spot_result[3,i+1])
+    #print(spot_result[3,1]*2)
+    f_3<-1/(spot_result[j+4,1]*2-spot_result[3,1]*2)
+    forward_result[j,i+1]<-((f_1/f_2)^(f_3)-1)*2
+  }
+}
+
+```
+
+Plot the forward curve
+```{r}
+forward_result_long <- pivot_longer(forward_result, -Time, names_to = "Day", values_to = "Spot")
+ggplot(forward_result_long, aes(x = Time, y = Spot, color = Day)) +
+  geom_line() +
+  labs(x = "Forward Time (from Year 1)", y = "Forward Rate", title = "Forward Curve") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+## 5
+Consider the yield first
+```{r}
+yield_Q5<-yield_result[, -1]
+yield_Q5<-yield_Q5[c(3, 5, 7, 9, 11), ]
+x_yield<-matrix(1:45, nrow = 5)
+for (i in c(1:9)) {
+  x_yield[,i]<-log(yield_Q5[,i+1]/yield_Q5[,i])
+}
+
+cov_yield<-cov(t(x_yield))
+cov_yield
+```
+
+Now, consider the forward
+```{r}
+forward_Q5<-forward_result[,-1]
+forward_Q5<-forward_Q5[c(1, 3, 5, 7), ]
+x_forward<-matrix(1:36, nrow = 4)
+for (i in c(1:9)) {
+  x_forward[,i]<-log(forward_Q5[,i+1]/forward_Q5[,i])
+}
+
+cov_forward<-cov(t(x_forward))
+cov_forward
+```
+
+## 6
+Yield's covariance matrix
+```{r}
+eigen_result_y <- eigen(cov_yield)
+eigenvalues_y <- eigen_result_y$values
+eigenvectors_y <- eigen_result_y$vectors
+print("Eigenvalue")
+print(eigenvalues_y)
+print("Eigenvector")
+print(eigenvectors_y)
+```
+
+Forward's covariance matrix
+```{r}
+eigen_result_f <- eigen(cov_forward)
+eigenvalues_f <- eigen_result_f$values
+eigenvectors_f <- eigen_result_f$vectors
+print("Eigenvalue")
+print(eigenvalues_f)
+print("Eigenvector")
+print(eigenvectors_f)
+```
+
+
+
+
